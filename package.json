@@ -1,35 +1,38 @@
 {
-  "name": "node-skeleton",
-  "version": "1.0.0",
-  "description": "",
+  "name": "@99linesofcode/opencode-beeper-bridge",
+  "version": "0.1.0",
+  "description": "Bridge Beeper messages to the active opencode session over the socket plugin's Unix socket. Inbound: chat messages become prompts. Outbound: assistant output streams back as condensed markdown.",
   "type": "module",
-  "main": "build/index.mjs",
-  "files": [
-    "build"
+  "license": "MIT",
+  "author": "Jordy Schreuders <99linesofcode@gmail.com>",
+  "keywords": [
+    "opencode",
+    "beeper",
+    "bridge",
+    "unix-socket",
+    "sse"
   ],
   "scripts": {
-    "dev": "tsc -w",
+    "dev": "bun run src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "audit": "pnpm audit"
-  },
-  "keywords": [],
-  "author": "Jordy Schreuders <99linesofcode@gmail.com>",
-  "license": "MIT",
-  "engines": {
-    "node": ">=22"
+    "audit": "bun audit"
   },
   "devDependencies": {
     "@tsconfig/node22": "^22.0.6",
     "@types/node": "^22",
+    "bun-types": "^1.4.0",
     "eslint": "^10",
     "eslint-config-prettier": "^10",
     "prettier": "^3",
     "typescript": "^5",
     "typescript-eslint": "^8",
     "vitest": "^5"
+  },
+  "engines": {
+    "opencode": ">=1.15.0"
   }
 }
