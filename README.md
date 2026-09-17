@@ -1,34 +1,101 @@
-# node-skeleton
+# @99linesofcode/opencode-beeper-bridge
 
-The starting point for my Node.js/TypeScript packages. It builds on
-[git-skeleton](https://github.com/99linesofcode/git-skeleton) for the shared
-configuration (`.editorconfig`, `.prettierrc`, `.gitignore`, `.ignore`) and
-adds the Node/TypeScript toolchain: TypeScript (ESM, NodeNext), vitest, and
-eslint with prettier.
+Bridge Beeper messages to a specific opencode session over the socket plugin's
+Unix socket. Each bridge instance attaches one chat to one session.
 
-## How to use
+- **Inbound:** a message sent to the configured Beeper chat (default: the
+  WhatsApp self-DM, chatID `5000`) becomes a user message in the pinned
+  opencode session. Voice notes are transcribed locally (ffmpeg → voxtype)
+  and the transcript is injected as the prompt, with the transcription posted
+  back to the chat. Both `file://` and encrypted `mxc://` attachments are
+  handled — `mxc://` is downloaded from the Matrix media server and decrypted
+  with AES-256-CTR using the key/IV embedded in the attachment metadata.
+- **Outbound:** assistant output in the pinned session streams back to the
+  chat as one condensed markdown message per completed turn.
 
-1. `git init`
-2. `git remote add origin <REPOSITORY>`
-3. `git remote add skeleton git@github.com:99linesofcode/node-skeleton.git`
-4. `git fetch skeleton`
-5. `git rebase skeleton/main`
+## Requirements
 
-Updates flow the same way: `git fetch skeleton && git rebase skeleton/main`.
-Conflicts on rebase are the divergence points — resolve them by keeping your
-repo's override where it differs from the shared default.
+- The [opencode socket plugin](https://github.com/99linesofcode/opencode-socket-plugin)
+  must be loaded (it binds the Unix socket the bridge talks to).
+- The Beeper desktop app must be running (it hosts the local MCP server the
+  bridge talks to).
+- `ffmpeg` and `voxtype` on `PATH` for voice-note transcription.
 
-## Commands
+## Install
 
 ```bash
-pnpm install      # install dependencies
-pnpm build        # compile TypeScript to build/
-pnpm dev          # watch and recompile on change
-pnpm test         # run the test suite once
-pnpm test:watch   # run the test suite in watch mode
-pnpm lint         # eslint (flat config + prettier)
-pnpm typecheck    # type-check without emitting
-pnpm audit        # check dependencies for known vulnerabilities
+bun install
+```
+
+## Usage
+
+```bash
+BEEPER_TOKEN=bdapi_... bun run src/index.ts
+```
+
+Configuration via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEEPER_TOKEN` | — (required) | Beeper API token (Bearer) for the local MCP server |
+| `BEEPER_MCP_URL` | `http://localhost:23373/v0/mcp` | Local Beeper MCP server |
+| `BEEPER_CHAT_ID` | `5000` | Chat to watch and post to; may carry the session as `<chatId>:<sessionId>` |
+| `OPENCODE_SESSION_ID` | — (required) | Session to attach to; wins over the `BEEPER_CHAT_ID` suffix |
+| `OPENCODE_SOCKET_PATH` | `$XDG_RUNTIME_DIR/opencode.sock` | Socket plugin's Unix socket |
+| `POLL_INTERVAL_MS` | `5000` | Inbound poll interval |
+| `DEBUG` | `false` | Log every SSE event (debugging aid) |
+
+## How it works
+
+```
+Beeper chat ◄──► bridge (Bun process) ◄──► opencode TUI + socket plugin
+```
+
+- The bridge polls the chat via the Beeper MCP server (JSON-RPC over HTTP,
+  Bearer auth), injects new messages into the session via
+  `POST /session/:id/prompt_async`, and subscribes to the socket's SSE stream
+  (`GET /event`). A turn is considered complete when no new assistant text
+  part arrives within a debounce window; the turn is then condensed and
+  posted back to the chat.
+
+## Multiple bridges
+
+Each bridge instance attaches one chat to one session. The instance name is
+`<chatId>:<sessionId>` — the session ID is passed explicitly, so several
+bridges can run at once, each pinned to its own session:
+
+```bash
+systemctl --user start opencode-beeper-bridge@7239:ses_f8471dc76ffeM1W4mMYvyDsvtA
+systemctl --user start opencode-beeper-bridge@6148:ses_anotherSessionId
+```
+
+The session ID can also be set via the `OPENCODE_SESSION_ID` environment
+variable; it wins over the instance suffix. One of the two is required — the
+bridge fails fast at startup if neither is present.
+
+## Notes
+
+- **Attach / detach lifecycle:** starting the bridge attaches the chat to the
+  session named in the instance. Stopping the bridge detaches it. Switching
+  sessions in the TUI while attached does not re-target the bridge.
+- The bridge skips messages it sent itself (tracked by message ID) so the
+  assistant's replies are never re-injected as prompts.
+- The inbound cursor is seeded at startup from the newest message — history is
+  not replayed.
+- The socket lives and dies with the opencode process. No TUI running, no
+  socket, no bridge.
+
+## Development
+
+```bash
+bun install       # install dependencies
+bun run dev       # run the bridge from source
+bun run build     # compile TypeScript to build/
+bun run test      # run the test suite once
+bun run test:watch # run the test suite in watch mode
+bun run lint      # eslint (flat config + prettier)
+bun run typecheck # type-check without emitting
+bun run audit     # check dependencies for known vulnerabilities
 ```
 
 ## Contributing
