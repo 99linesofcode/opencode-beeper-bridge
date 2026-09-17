@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: daily
+      time: '06:00'
+    assignees:
+      - 99linesofcode
+    commit-message:
+      prefix: fix
+      prefix-development: chore
+      include: scope
+    ignore:
+      - update-types:
+          - version-update:semver-patch
+    cooldown:
+      default-days: 7
+    groups:
+      automated:
+        update-types:
+          - 'patch'
+          - 'minor'
+      manual:
+        update-types:
+          - 'major'
