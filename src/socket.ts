@@ -77,7 +77,12 @@ export function createOpencodeClient(
       // The ?session= filter narrows the stream to one session; the plugin
       // drops everything else before it reaches the socket.
       const parser = createSseParser(onEvent);
-      const feedHttp = createChunkedDecoder((body) => parser.feed(body));
+      const textDecoder = new TextDecoder();
+      // Decode only at complete-body boundaries: a chunk body is a complete
+      // SSE block, so a multi-byte character is never split mid-decode.
+      const feedHttp = createChunkedDecoder((body) =>
+        parser.feed(textDecoder.decode(body)),
+      );
       const params = new URLSearchParams({
         events: 'message.updated,message.part.updated',
       });
@@ -98,7 +103,16 @@ export function createOpencodeClient(
               'Connection: keep-alive\r\n\r\n',
           );
         });
-        sock.on('data', (chunk) => feedHttp(String(chunk)));
+        sock.on('data', (chunk) => {
+          try {
+            feedHttp(chunk);
+          } catch (err) {
+            // Corrupt framing is unrecoverable — drop the connection so the
+            // reconnect loop re-subscribes cleanly.
+            logger.error(`SSE framing error: ${err}`);
+            sock.destroy();
+          }
+        });
         sock.on('close', () => {
           logger.debug('SSE connection closed');
           resolve();
@@ -145,50 +159,87 @@ function request(
 // Minimal HTTP chunked-transfer decoder. Bun.serve streams SSE responses with
 // Transfer-Encoding: chunked; the raw socket client must strip the framing
 // (hex size lines + trailing CRLF) before the body reaches the SSE parser.
+//
+// Byte-accurate by design: chunk sizes are byte counts, so all slicing happens
+// on bytes. Text decoding is the caller's job, at complete-body boundaries —
+// decoding per TCP segment corrupts multi-byte UTF-8 split across segments,
+// and slicing by string length desyncs the framing on any multi-byte body.
 export function createChunkedDecoder(
-  onBody: (chunk: string) => void,
-): (chunk: string) => void {
-  let buffer = '';
+  onBody: (chunk: Uint8Array) => void,
+): (chunk: Uint8Array) => void {
+  let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   let inHeaders = true;
   let chunkRemaining = 0; // bytes of the current chunk body still expected
+  const sizeLineDecoder = new TextDecoder();
 
   return (chunk) => {
-    buffer += chunk;
+    buffer = concat(buffer, chunk);
 
     while (true) {
       if (inHeaders) {
-        const headerEnd = buffer.indexOf('\r\n\r\n');
+        const headerEnd = indexOfDoubleCRLF(buffer);
         if (headerEnd === -1) return;
-        buffer = buffer.slice(headerEnd + 4);
+        buffer = buffer.subarray(headerEnd + 4);
         inHeaders = false;
         continue;
       }
 
       if (chunkRemaining === 0) {
-        // Expect a chunk-size line: "<hex>[;ext]\r\n"
-        const lineEnd = buffer.indexOf('\r\n');
+        // Expect a chunk-size line: "<hex>[;ext]\r\n". Anything unparsable
+        // means the framing is corrupt — fail loudly so the caller can drop
+        // the connection, instead of silently emitting garbage bodies.
+        const lineEnd = indexOfCRLF(buffer);
         if (lineEnd === -1) return;
-        const sizeLine = buffer.slice(0, lineEnd);
-        buffer = buffer.slice(lineEnd + 2);
-        const size = parseInt(sizeLine.split(';')[0] ?? '', 16);
+        const sizeLine = sizeLineDecoder.decode(buffer.subarray(0, lineEnd));
+        buffer = buffer.subarray(lineEnd + 2);
+        const size = Number.parseInt(sizeLine.split(';')[0] ?? '', 16);
+        if (!Number.isInteger(size) || size < 0) {
+          throw new Error(`malformed chunk size line: "${sizeLine}"`);
+        }
         if (size === 0) return; // last-chunk marker; ignore trailers
         chunkRemaining = size;
         continue;
       }
 
       if (buffer.length < chunkRemaining + 1) return; // wait for full chunk + terminator
-      onBody(buffer.slice(0, chunkRemaining));
+      onBody(buffer.subarray(0, chunkRemaining));
       // Skip the chunk terminator: CRLF per spec, but tolerate a bare LF —
       // a mis-skipped byte here would eat the next chunk-size line's first
       // hex digit and corrupt the stream.
-      let skip = 1;
-      if (
-        buffer[chunkRemaining] === '\r' &&
-        buffer[chunkRemaining + 1] === '\n'
-      )
-        skip = 2;
-      buffer = buffer.slice(chunkRemaining + skip);
+      const skip =
+        buffer[chunkRemaining] === 0x0d && buffer[chunkRemaining + 1] === 0x0a
+          ? 2
+          : 1;
+      buffer = buffer.subarray(chunkRemaining + skip);
       chunkRemaining = 0;
     }
   };
+}
+
+function indexOfCRLF(bytes: Uint8Array): number {
+  for (let i = 0; i < bytes.length - 1; i++) {
+    if (bytes[i] === 0x0d && bytes[i + 1] === 0x0a) return i;
+  }
+  return -1;
+}
+
+function indexOfDoubleCRLF(bytes: Uint8Array): number {
+  for (let i = 0; i < bytes.length - 3; i++) {
+    if (
+      bytes[i] === 0x0d &&
+      bytes[i + 1] === 0x0a &&
+      bytes[i + 2] === 0x0d &&
+      bytes[i + 3] === 0x0a
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
 }
