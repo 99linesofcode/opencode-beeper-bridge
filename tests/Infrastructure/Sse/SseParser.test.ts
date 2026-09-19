@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { createSseParser, type SSEEvent } from '../src/sse.js';
+import { SseParser } from '../../../src/Infrastructure/Sse/SseParser.js';
+import type { SessionEvent } from '../../../src/Domain/Ports/SessionPort.js';
 
-function collect(): { feed(chunk: string): void; events: SSEEvent[] } {
-  const events: SSEEvent[] = [];
-  return { feed: createSseParser((event) => events.push(event)).feed, events };
+function collect(): { feed(chunk: string): void; events: SessionEvent[] } {
+  const events: SessionEvent[] = [];
+  const parser = new SseParser((event) => events.push(event));
+  return { feed: (chunk) => parser.feed(chunk), events };
 }
 
-describe('createSseParser', () => {
+describe('SseParser', () => {
   it('derives the event type from bare JSON data', () => {
     const { feed, events } = collect();
 

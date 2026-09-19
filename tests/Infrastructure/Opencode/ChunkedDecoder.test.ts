@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createChunkedDecoder } from '../src/socket.js';
+import { ChunkedDecoder } from '../../../src/Infrastructure/Opencode/ChunkedDecoder.js';
 
 // Collects decoded body chunks for a decoder instance. Bodies arrive as
 // bytes; decoding to text happens here, at complete-body boundaries — the
@@ -7,10 +7,8 @@ import { createChunkedDecoder } from '../src/socket.js';
 function collect(): { feed(chunk: Uint8Array): void; bodies: string[] } {
   const bodies: string[] = [];
   const decode = new TextDecoder();
-  return {
-    feed: createChunkedDecoder((body) => bodies.push(decode.decode(body))),
-    bodies,
-  };
+  const decoder = new ChunkedDecoder((body) => bodies.push(decode.decode(body)));
+  return { feed: (chunk) => decoder.feed(chunk), bodies };
 }
 
 const HEADERS = 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n';
@@ -28,7 +26,7 @@ function frame(body: string, headers = HEADERS): Buffer {
   ]);
 }
 
-describe('createChunkedDecoder', () => {
+describe('ChunkedDecoder', () => {
   it('decodes a single complete chunk', () => {
     const { feed, bodies } = collect();
 
@@ -127,7 +125,10 @@ describe('createChunkedDecoder', () => {
 
     const body = '—🎙️— ok';
     const bodyBytes = Buffer.from(body, 'utf8');
-    const head = Buffer.from(`${HEADERS}${bodyBytes.length.toString(16)}\r\n`, 'utf8');
+    const head = Buffer.from(
+      `${HEADERS}${bodyBytes.length.toString(16)}\r\n`,
+      'utf8',
+    );
     const payload = Buffer.concat([head, bodyBytes, Buffer.from('\r\n', 'utf8')]);
 
     // Split inside the first multi-byte character, as a TCP segment would.
@@ -142,7 +143,9 @@ describe('createChunkedDecoder', () => {
     const { feed, bodies } = collect();
 
     const payloads = ['— one', '🎙️ two', '三 three', '—🎙️— four'];
-    payloads.forEach((payload, i) => feed(frame(payload, i === 0 ? HEADERS : '')));
+    payloads.forEach((payload, i) =>
+      feed(frame(payload, i === 0 ? HEADERS : '')),
+    );
 
     expect(bodies).toEqual(payloads);
   });

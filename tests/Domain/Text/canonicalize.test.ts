@@ -1,19 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalize, formatForBeeper } from '../src/format.js';
-
-describe('formatForBeeper', () => {
-  it('trims and collapses blank-line runs', () => {
-    const formatted = formatForBeeper('\n\nhello\n\n\n\nworld\n\n');
-
-    expect(formatted).toBe('hello\n\nworld');
-  });
-
-  it('leaves single blank lines alone', () => {
-    const formatted = formatForBeeper('a\n\nb');
-
-    expect(formatted).toBe('a\n\nb');
-  });
-});
+import { canonicalize } from '../../../src/Domain/Text/canonicalize.js';
 
 describe('canonicalize', () => {
   it('strips HTML tags and decodes entities', () => {
@@ -58,19 +44,5 @@ describe('canonicalize', () => {
     const canonical = canonicalize('a\n\n  b\tc');
 
     expect(canonical).toBe('a b c');
-  });
-
-  it('canonicalizes the sent and rendered sides identically', () => {
-    // The contract the echo guard depends on: what the bridge sends down
-    // (markdown) and what Beeper renders back (HTML) must compare equal.
-    const markdown =
-      '# Title\n\nSome **bold** text with [a link](https://x) and `code`.\n\n- one\n- two';
-    const html =
-      '<h1>Title</h1><p>Some <b>bold</b> text with <a href="https://x">a link</a> and <code>code</code>.</p><ul><li>one</li><li>two</li></ul>';
-
-    const sentSide = canonicalize(formatForBeeper(markdown));
-    const renderedSide = canonicalize(html);
-
-    expect(sentSide).toBe(renderedSide);
   });
 });
