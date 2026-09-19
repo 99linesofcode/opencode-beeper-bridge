@@ -101,6 +101,11 @@ async function subscribeWithRetry(): Promise<void> {
       logger.error(`SSE subscription error: ${err}`);
     }
     if (shuttingDown) break;
+    // The connection closed or errored — drop the subscription so the next
+    // iteration creates a fresh one. Without this reset the loop re-awaits
+    // an already-resolved `done` promise and never actually reconnects.
+    subscription = null;
+    subscribedSessionID = null;
     logger.info('SSE connection closed; reconnecting in 3s');
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
