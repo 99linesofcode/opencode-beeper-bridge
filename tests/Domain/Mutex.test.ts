@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { createLock } from '../src/lock.js';
+import { Mutex } from '../../src/Domain/Mutex.js';
 
 const wait = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-describe('createLock', () => {
+describe('Mutex', () => {
   it('serializes concurrent sections in call order', async () => {
-    const lock = createLock();
+    const mutex = new Mutex();
     const order: string[] = [];
 
-    const first = lock.run(async () => {
+    const first = mutex.run(async () => {
       await wait(10);
       order.push('first');
     });
-    const second = lock.run(async () => {
+    const second = mutex.run(async () => {
       order.push('second');
     });
     await Promise.all([first, second]);
@@ -22,16 +22,16 @@ describe('createLock', () => {
   });
 
   it('releases the lock when a section throws', async () => {
-    const lock = createLock();
+    const mutex = new Mutex();
 
     await expect(
-      lock.run(async () => {
+      mutex.run(async () => {
         throw new Error('boom');
       }),
     ).rejects.toThrow('boom');
 
     const order: string[] = [];
-    await lock.run(async () => {
+    await mutex.run(async () => {
       order.push('ran');
     });
 

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createSentRegistry } from '../src/sent.js';
+import { OwnMessageRegistry } from '../../src/Domain/OwnMessageRegistry.js';
 
-describe('createSentRegistry', () => {
+describe('OwnMessageRegistry', () => {
   it('recognizes a marked message as own', () => {
-    const registry = createSentRegistry();
+    const registry = new OwnMessageRegistry();
 
     registry.markOwn('msg_1');
 
@@ -11,7 +11,7 @@ describe('createSentRegistry', () => {
   });
 
   it('does not recognize unmarked messages as own', () => {
-    const registry = createSentRegistry();
+    const registry = new OwnMessageRegistry();
     registry.markOwn('msg_1');
 
     const own = registry.isOwn('msg_2');
