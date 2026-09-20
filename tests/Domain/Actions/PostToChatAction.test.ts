@@ -63,7 +63,7 @@ describe('PostToChatAction', () => {
     const { chat } = fakeChat([{ id: 'msg_1', text: 'completely unrelated' }]);
 
     const done = postToChat(chat, registry).execute('hello from the bridge');
-    await vi.advanceTimersByTimeAsync(1500);
+    await vi.advanceTimersByTimeAsync(6000);
     await done;
 
     expect(registry.isOwn('msg_1')).toBe(false);
@@ -75,9 +75,45 @@ describe('PostToChatAction', () => {
     const { chat } = fakeChat([]);
 
     const done = postToChat(chat, registry).execute('hello');
-    await vi.advanceTimersByTimeAsync(1500);
+    await vi.advanceTimersByTimeAsync(6000);
     await done;
 
     expect(registry.isOwn('msg_1')).toBe(false);
+  });
+
+  it('retries the send when the message never surfaces in the chat', async () => {
+    vi.useFakeTimers();
+    const registry = new OwnMessageRegistry();
+    // The chat never shows the sent message — the send silently dropped.
+    const { chat, sent } = fakeChat([]);
+    const errors: string[] = [];
+    const action = new PostToChatAction(
+      chat,
+      registry,
+      new Mutex(),
+      { info: () => {}, debug: () => {}, error: (m) => errors.push(m) },
+      '9130',
+      20,
+    );
+
+    const done = action.execute('hello');
+    await vi.advanceTimersByTimeAsync(4000);
+    await done;
+
+    // The dropped send is retried once, and the failure is visible.
+    expect(sent).toEqual(['hello', 'hello']);
+    expect(errors.some((m) => m.includes('retrying'))).toBe(true);
+  });
+
+  it('does not retry when the message surfaces normally', async () => {
+    vi.useFakeTimers();
+    const registry = new OwnMessageRegistry();
+    const { chat, sent } = fakeChat([
+      { id: 'msg_1', text: 'hello from the bridge' },
+    ]);
+
+    await postToChat(chat, registry).execute('hello from the bridge');
+
+    expect(sent).toEqual(['hello from the bridge']);
   });
 });
