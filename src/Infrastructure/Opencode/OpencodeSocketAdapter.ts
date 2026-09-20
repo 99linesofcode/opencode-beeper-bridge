@@ -76,7 +76,7 @@ export class OpencodeSocketAdapter implements SessionPort {
       parser.feed(textDecoder.decode(body)),
     );
     const params = new URLSearchParams({
-      events: 'message.updated,message.part.updated',
+      events: 'message.updated,message.part.updated,session.status,session.idle',
     });
     if (sessionID) params.set('session', sessionID);
     const path = `/event?${params}`;
