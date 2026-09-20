@@ -72,7 +72,7 @@ const inbound = new InboundPoller(
     fallbackSessionID: config.opencodeSessionId,
   },
 );
-const turnWatcher = new TurnWatcher(publishTurn, logger, sessionRef);
+const turnWatcher = new TurnWatcher(publishTurn, session, logger, sessionRef);
 
 logger.info(
   `starting: chat=${config.beeperChatId} socket=${config.opencodeSocketPath}`,
