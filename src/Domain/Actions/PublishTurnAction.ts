@@ -4,6 +4,7 @@
 import type { SessionPort } from '../Ports/SessionPort.js';
 import type { LoggerPort } from '../Ports/LoggerPort.js';
 import type { PostToChatAction } from './PostToChatAction.js';
+import { summaryFromParts } from '../summaryFromParts.js';
 
 export class PublishTurnAction {
   constructor(
@@ -33,8 +34,11 @@ export class PublishTurnAction {
     for (const messageID of messageIDs) {
       try {
         const message = await this.session.getMessage(sessionID, messageID);
-        const messageText = extractMessageText(message);
-        if (messageText) texts.push(messageText);
+        const summary = summaryFromParts(
+          (message as { parts?: Array<{ type?: string; text?: string }> })
+            ?.parts,
+        );
+        if (summary) texts.push(summary);
       } catch (err) {
         this.logger.error(`fetch message ${messageID} error: ${err}`);
         return null;
@@ -42,18 +46,4 @@ export class PublishTurnAction {
     }
     return texts.length > 0 ? texts.join('\n') : null;
   }
-}
-
-// The session message shape is { parts: [{ type: "text", text }] }.
-function extractMessageText(message: unknown): string | undefined {
-  if (typeof message !== 'object' || message === null) return undefined;
-  const parts = (message as { parts?: Array<{ type?: string; text?: string }> })
-    .parts;
-  if (!Array.isArray(parts)) return undefined;
-  const texts = parts
-    .filter(
-      (p) => p.type === 'text' && typeof p.text === 'string' && p.text.trim(),
-    )
-    .map((p) => p.text as string);
-  return texts.length > 0 ? texts.join('\n') : undefined;
 }

@@ -104,9 +104,7 @@ describe('TurnWatcher', () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(published).toHaveLength(1);
     expect(published[0]!.messageIDs).toEqual(['msg_1']);
-    expect(published[0]!.fallbackText).toBe(
-      'Let me look at this.\nHere is what I found.',
-    );
+    expect(published[0]!.fallbackText).toBe('Here is what I found.');
   });
 
   it('publishes a text-only turn after the debounce', async () => {

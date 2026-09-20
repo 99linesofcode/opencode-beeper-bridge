@@ -87,6 +87,10 @@ export class TurnWatcher {
             text: textPart.text,
           });
           this.turnMessageIDs.add(textPart.messageID);
+        } else if (part.type === 'tool') {
+          // A tool call means everything accumulated so far is intermediate
+          // commentary — the fallback text tracks only the closing section.
+          this.parts.clear();
         }
 
         // Any part — text or tool — means the turn is still moving. Arm on
