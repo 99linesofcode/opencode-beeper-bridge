@@ -22,6 +22,9 @@ export class PostToChatAction {
     const formatted = formatForBeeper(text);
     await this.mutex.run(async () => {
       await this.chat.sendMessage(this.chatID, formatted);
+      // Track the sent text immediately so the poller skips it even if the
+      // ID correlation below fails (Beeper propagation lag under streaming).
+      this.registry.markSentText(formatted);
       if (await this.recordOwn(formatted)) return;
       // The send claimed success but the message never surfaced in the
       // chat — the Beeper app occasionally drops sends silently. Retry

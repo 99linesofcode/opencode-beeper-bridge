@@ -19,6 +19,8 @@ export type InboundPollerOptions = {
   fallbackSessionID: string;
 };
 
+const HANDLE_TIMEOUT_MS = 180_000;
+
 export class InboundPoller {
   private lastSeenID: string | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -63,31 +65,93 @@ export class InboundPoller {
     if (this.polling) return;
     this.polling = true;
     try {
+      // List + advance the cursor under the mutex (fast), then release it
+      // before handling so a slow/hung relay never blocks the next poll or
+      // the outbound echo-guard.
+      let newMessages: ChatMessageData[] = [];
       await this.mutex.run(async () => {
         const messages = await this.chat.listMessages(
           this.options.chatID,
           this.options.messageLimit,
         );
         // Newest-first; walk backwards to oldest, handle in chronological
-        // order. Skip the bridge's own posts by recorded ID.
-        const newMessages: ChatMessageData[] = [];
+        // order. Skip the bridge's own posts by recorded ID, and by
+        // recently-sent text (covers the case where ID correlation failed).
+        newMessages = [];
         for (const message of messages) {
           if (this.registry.isOwn(message.id)) continue;
+          if (message.text !== undefined && this.registry.isOwnText(message.text)) continue;
+          // Only the user's own account may drive the agent. isSender ===
+          // false is an explicit "not from the authenticated account" — skip
+          // it. Absent isSender is fail-open: a payload-shape change degrades
+          // to today's behavior (inject) instead of deafening the bridge.
+          if (message.isSender === false) {
+            this.logger.info(
+              `skipping message ${message.id} from ${message.senderID ?? 'unknown'} (not the user's own account)`,
+            );
+            continue;
+          }
           if (this.lastSeenID !== null && message.id === this.lastSeenID) break;
           newMessages.unshift(message);
         }
         const newest = newMessages[newMessages.length - 1];
         if (newest) this.lastSeenID = newest.id;
-
-        for (const message of newMessages) {
-          await this.handle(message);
-        }
       });
+
+      // Handle outside the mutex and the polling guard. Text messages are
+      // awaited (fast); voice relays run in the background so a slow or hung
+      // transcription can never block text delivery or the next poll.
+      for (const message of newMessages) {
+        if (message.text) {
+          await this.handleWithTimeout(message);
+        } else if (message.attachments?.[0]) {
+          void this.relayWithTimeout(message);
+        }
+      }
     } catch (err) {
       this.logger.error(`poll error: ${err}`);
     } finally {
       this.polling = false;
     }
+  }
+
+  // A hung handle (a fetch without a timeout, a stuck child process) would
+  // hold the re-entrancy guard forever and deafen the bridge. Time each
+  // message out so a hang degrades loudly instead of silently.
+  private async handleWithTimeout(message: ChatMessageData): Promise<void> {
+    await Promise.race([
+      this.handle(message),
+      new Promise<'timeout'>((resolve) =>
+        setTimeout(() => resolve('timeout'), HANDLE_TIMEOUT_MS).unref(),
+      ),
+    ]).then((result) => {
+      if (result === 'timeout') {
+        this.logger.error(
+          `handle message ${message.id} timed out after ${HANDLE_TIMEOUT_MS}ms; skipping`,
+        );
+      }
+    });
+  }
+
+  // Voice relays run in the background so they never block the poll loop.
+  private async relayWithTimeout(message: ChatMessageData): Promise<void> {
+    await Promise.race([
+      this.relayVoiceNote.execute({
+        sessionID: this.sessionID() ?? this.options.fallbackSessionID,
+        attachment: message.attachments![0]!,
+      }),
+      new Promise<'timeout'>((resolve) =>
+        setTimeout(() => resolve('timeout'), HANDLE_TIMEOUT_MS).unref(),
+      ),
+    ]).then((result) => {
+      if (result === 'timeout') {
+        this.logger.error(
+          `relay message ${message.id} timed out after ${HANDLE_TIMEOUT_MS}ms`,
+        );
+      } else {
+        this.logger.info(`relayed voice note ${message.id}`);
+      }
+    });
   }
 
   private async handle(message: ChatMessageData): Promise<void> {
@@ -101,12 +165,6 @@ export class InboundPoller {
       this.logger.info(
         `injected message ${message.id} into session ${sessionID}`,
       );
-      return;
-    }
-    const attachment = message.attachments?.[0];
-    if (attachment) {
-      await this.relayVoiceNote.execute({ sessionID, attachment });
-      this.logger.info(`relayed voice note ${message.id}`);
     }
   }
 

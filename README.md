@@ -11,7 +11,8 @@ Unix socket. Each bridge instance attaches one chat to one session.
   handled — `mxc://` is downloaded from the Matrix media server and decrypted
   with AES-256-CTR using the key/IV embedded in the attachment metadata.
 - **Outbound:** assistant output in the pinned session streams back to the
-  chat as one condensed markdown message per completed turn.
+  chat as each text part is produced (debounced so a streaming part posts
+  once with its complete text) — live progress, not one summary at the end.
 
 ## Requirements
 
@@ -54,9 +55,9 @@ Beeper chat ◄──► bridge (Bun process) ◄──► opencode TUI + socket
 - The bridge polls the chat via the Beeper MCP server (JSON-RPC over HTTP,
   Bearer auth), injects new messages into the session via
   `POST /session/:id/prompt_async`, and subscribes to the socket's SSE stream
-  (`GET /event`). A turn is considered complete when no new assistant text
-  part arrives within a debounce window; the turn is then condensed and
-  posted back to the chat.
+  (`GET /event`) and posts each assistant text part as it is produced —
+  debounced so a streaming part posts once with its complete text; the turn
+  end (idle) is only a safety net to flush parts still streaming.
 
 ## Multiple bridges
 

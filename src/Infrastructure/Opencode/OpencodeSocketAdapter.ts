@@ -12,10 +12,19 @@ import type { LoggerPort } from '../../Domain/Ports/LoggerPort.js';
 import { ChunkedDecoder } from './ChunkedDecoder.js';
 import { SseParser } from '../Sse/SseParser.js';
 
+// A socket that accepts but never responds would leave `done` pending
+// forever and stall the reconnect loop — bound connect + first byte.
+export const SSE_FIRST_BYTE_TIMEOUT_MS = 15_000;
+
+export type OpencodeSocketAdapterOptions = {
+  firstByteTimeoutMs?: number;
+};
+
 export class OpencodeSocketAdapter implements SessionPort {
   constructor(
     private readonly socketPath: string,
     private readonly logger: LoggerPort,
+    private readonly options: OpencodeSocketAdapterOptions = {},
   ) {}
 
   async getSession(sessionID: string): Promise<unknown> {
@@ -82,7 +91,29 @@ export class OpencodeSocketAdapter implements SessionPort {
     const path = `/event?${params}`;
     const sock = net.connect(this.socketPath);
     const done = new Promise<void>((resolve, reject) => {
+      // Bound connect + first byte: a socket that accepts but never responds
+      // would leave `done` pending forever and stall the reconnect loop.
+      // Destroying the socket fires 'close', which resolves `done` below and
+      // lets the retry loop reconnect.
+      const timeoutMs =
+        this.options.firstByteTimeoutMs ?? SSE_FIRST_BYTE_TIMEOUT_MS;
+      let firstByteTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+        () => {
+          this.logger.error(
+            `SSE no response within ${timeoutMs}ms; destroying socket`,
+          );
+          sock.destroy();
+        },
+        timeoutMs,
+      );
+      const clearFirstByteTimer = () => {
+        if (firstByteTimer) {
+          clearTimeout(firstByteTimer);
+          firstByteTimer = null;
+        }
+      };
       sock.on('error', (err) => {
+        clearFirstByteTimer();
         this.logger.error(`SSE connect error: ${err.message}`);
         reject(err);
       });
@@ -96,6 +127,7 @@ export class OpencodeSocketAdapter implements SessionPort {
         );
       });
       sock.on('data', (chunk) => {
+        clearFirstByteTimer();
         try {
           feedHttp.feed(chunk);
         } catch (err) {
@@ -106,6 +138,7 @@ export class OpencodeSocketAdapter implements SessionPort {
         }
       });
       sock.on('close', () => {
+        clearFirstByteTimer();
         this.logger.debug('SSE connection closed');
         resolve();
       });

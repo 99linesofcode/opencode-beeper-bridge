@@ -1,13 +1,14 @@
 // Driving side: watches the session's event stream for assistant output and
-// publishes one condensed message per completed turn. The turn-completion
-// signal is the session's own status: opencode emits session.status
-// {"type":"idle"} (and session.idle) when a turn finishes — no debounce
-// guessing, no mid-turn flushes. Text parts accumulate for the fallback;
-// tool parts clear them (the fallback tracks only the closing section); the
-// authoritative summary comes from the socket API at flush time.
+// posts each assistant text part to the chat as it is produced, so the user
+// sees live progress during a long-running task instead of one condensed
+// summary at the end. A streaming text part updates its text over several
+// events, so each part is debounced briefly and posted once with its complete
+// text. The turn-completion signal (session idle) is kept only as a safety
+// net to flush any part still streaming when the turn ends.
 import type { SessionEvent } from '../Domain/Ports/SessionPort.js';
 import type { LoggerPort } from '../Domain/Ports/LoggerPort.js';
-import type { PublishTurnAction } from '../Domain/Actions/PublishTurnAction.js';
+import type { PostToChatAction } from '../Domain/Actions/PostToChatAction.js';
+import { canonicalize } from '../Domain/Text/canonicalize.js';
 
 type TextPart = {
   id: string;
@@ -29,26 +30,33 @@ type AnyPart = {
   ignored?: boolean;
 };
 
+const PART_DEBOUNCE_MS = 400;
+// Bound the dedup set — the service runs for days, and unbounded growth is a
+// slow leak. Oldest evicted FIFO.
+const MAX_SENT_TEXTS = 200;
+
 export class TurnWatcher {
   private readonly roles = new Map<string, 'user' | 'assistant'>();
   private readonly parts = new Map<string, { messageID: string; text: string }>();
-  // Assistant message IDs seen in this turn. SSE parts can be corrupted or
-  // dropped (garbled events), so the authoritative text is fetched per
-  // message on flush; these IDs say which messages to fetch.
-  private readonly turnMessageIDs = new Set<string>();
-  // Message IDs already published. Duplicate part events arrive after a
-  // flush (the SSE stream repeats part updates); without this, a late
-  // duplicate re-adds the part and a second idle would double-send.
-  private readonly sentMessageIDs = new Set<string>();
+  // Canonicalized texts already posted. Dedup by content, not part ID: the
+  // same assistant text can arrive under different part IDs (duplicate SSE
+  // events, or a message re-emitted), and posting it twice is a duplicate.
+  // A Map (not a Set) so insertion order drives FIFO eviction.
+  private readonly sentTexts = new Map<string, boolean>();
+  private readonly debounceTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   // Re-entrancy guard: opencode emits session.status(idle) AND session.idle
   // back-to-back on completion — the second must not re-enter while the
-  // first flush is still marking messages as sent.
+  // first flush is still posting.
   private flushing = false;
 
   constructor(
-    private readonly publishTurn: PublishTurnAction,
+    private readonly postToChat: PostToChatAction,
     private readonly logger: LoggerPort,
     private readonly sessionRef: { id: string | null },
+    private readonly debounceMs: number = PART_DEBOUNCE_MS,
   ) {}
 
   handleEvent(event: SessionEvent): void {
@@ -78,17 +86,15 @@ export class TurnWatcher {
         if (part.type === 'text') {
           if (role !== 'assistant') break;
           const textPart = part as TextPart;
-          if (this.sentMessageIDs.has(textPart.messageID)) break;
-          if (this.parts.has(textPart.id)) break; // duplicate part event
+          // Store the latest text and (re)schedule the post — a streaming
+          // part updates its text over several events, so debounce until it
+          // stops changing, then post the complete text once. Dedup happens
+          // at post time by canonicalized content.
           this.parts.set(textPart.id, {
             messageID: textPart.messageID,
             text: textPart.text,
           });
-          this.turnMessageIDs.add(textPart.messageID);
-        } else if (part.type === 'tool') {
-          // A tool call means everything accumulated so far is intermediate
-          // commentary — the fallback text tracks only the closing section.
-          this.parts.clear();
+          this.schedulePost(textPart.id);
         }
         break;
       }
@@ -106,46 +112,86 @@ export class TurnWatcher {
           status?.sessionID === this.sessionRef.id &&
           status.status?.type === 'idle'
         ) {
-          void this.flushTurn();
+          void this.flushPending();
         }
         break;
       }
       case 'session.idle': {
         // Belt and braces: some versions emit the dedicated idle event.
-        void this.flushTurn();
+        void this.flushPending();
         break;
       }
     }
   }
 
   stop(): void {
-    // No timers to stop — the idle event is the only flush trigger. Kept
-    // for lifecycle symmetry with the inbound poller.
+    for (const timer of this.debounceTimers.values()) clearTimeout(timer);
+    this.debounceTimers.clear();
   }
 
-  private async flushTurn(): Promise<void> {
+  // Observability for tests: how many distinct texts are currently deduped.
+  get sentTextsSize(): number {
+    return this.sentTexts.size;
+  }
+
+  // Observability for tests: how many parts are still awaiting a post.
+  get partsSize(): number {
+    return this.parts.size;
+  }
+
+  private schedulePost(partID: string): void {
+    const existing = this.debounceTimers.get(partID);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.debounceTimers.delete(partID);
+      void this.postPart(partID);
+    }, this.debounceMs);
+    this.debounceTimers.set(partID, timer);
+  }
+
+  private async postPart(partID: string): Promise<void> {
+    const part = this.parts.get(partID);
+    if (!part) return;
+    const text = part.text?.trim();
+    if (!text) return;
+    const key = canonicalize(text);
+    if (this.sentTexts.has(key)) {
+      // Already posted — the part is redundant; drop it.
+      this.parts.delete(partID);
+      return;
+    }
+    // Mark BEFORE the await: two parts with the same text can fire their
+    // debounce timers concurrently, and a check-then-add-after-await lets
+    // both pass and double-post. Marking first closes the race.
+    this.markSent(key);
+    try {
+      await this.postToChat.execute(text);
+    } catch (err) {
+      this.logger.error(`post part error: ${err}`);
+    } finally {
+      // Posted parts need not stay; flushPending only needs not-yet-posted
+      // parts.
+      this.parts.delete(partID);
+    }
+  }
+
+  private markSent(key: string): void {
+    this.sentTexts.set(key, true);
+    if (this.sentTexts.size > MAX_SENT_TEXTS) {
+      const oldest = this.sentTexts.keys().next().value;
+      if (oldest !== undefined) this.sentTexts.delete(oldest);
+    }
+  }
+
+  // Safety net: when the turn ends, post any part still streaming (its
+  // debounce hadn't fired yet). Idempotent via sentTexts.
+  private async flushPending(): Promise<void> {
     if (this.flushing) return;
-    if (this.parts.size === 0 && this.turnMessageIDs.size === 0) return;
     this.flushing = true;
     try {
-      const sessionID = this.sessionRef.id;
-      const messageIDs = [...this.turnMessageIDs];
-      if (!sessionID || messageIDs.length === 0) return;
-
-      // NOTE: roles are NOT pruned. A single assistant message can span
-      // multiple turns' worth of events (tool calls create gaps), and its
-      // later text parts must still pass the role check. The map is bounded
-      // by the number of messages in the session, so it stays small.
-      const fallbackText = [...this.parts.values()]
-        .map((p) => p.text)
-        .join('\n');
-      this.parts.clear();
-      await this.publishTurn.execute({ sessionID, messageIDs, fallbackText });
-      for (const id of messageIDs) this.sentMessageIDs.add(id);
-      this.turnMessageIDs.clear();
-      this.logger.info('published turn');
-    } catch (err) {
-      this.logger.error(`publish turn error: ${err}`);
+      for (const partID of [...this.parts.keys()]) {
+        await this.postPart(partID);
+      }
     } finally {
       this.flushing = false;
     }

@@ -10,6 +10,8 @@ import { SseParser } from '../Sse/SseParser.js';
 type BeeperMessage = {
   id: string;
   text?: string;
+  senderID?: string;
+  isSender?: boolean;
   attachments?: BeeperAttachment[];
   [key: string]: unknown;
 };
@@ -27,6 +29,11 @@ type McpPayload = {
   result?: { content?: Array<{ type?: string; text?: string }> };
   error?: { message?: string };
 };
+
+// A hung MCP call would hold the shared mutex forever (PostToChatAction runs
+// sendMessage inside mutex.run) and deafen the bridge — every external call
+// gets a hard timeout.
+export const MCP_TIMEOUT_MS = 30_000;
 
 export class BeeperMcpAdapter implements ChatPort {
   private readonly url: URL;
@@ -77,6 +84,7 @@ export class BeeperMcpAdapter implements ChatPort {
         method: 'tools/call',
         params: { name: tool, arguments: args },
       }),
+      signal: AbortSignal.timeout(MCP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`MCP ${tool} failed: HTTP ${res.status}`);
 
@@ -107,6 +115,8 @@ function toChatMessageData(message: BeeperMessage): ChatMessageData {
   if (typeof message.text === 'string' && message.text.trim()) {
     data.text = message.text;
   }
+  if (typeof message.senderID === 'string') data.senderID = message.senderID;
+  if (typeof message.isSender === 'boolean') data.isSender = message.isSender;
   const attachments = (message.attachments ?? [])
     .filter(isAudio)
     .map(toAudioAttachmentData);

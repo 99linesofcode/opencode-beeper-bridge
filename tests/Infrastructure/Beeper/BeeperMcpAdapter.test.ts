@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BeeperMcpAdapter } from '../../../src/Infrastructure/Beeper/BeeperMcpAdapter.js';
+import { BeeperMcpAdapter, MCP_TIMEOUT_MS } from '../../../src/Infrastructure/Beeper/BeeperMcpAdapter.js';
 
 // Stubs the MCP server: responds to any tools/call with the given items as
 // an SSE-framed JSON-RPC result.
@@ -72,6 +72,53 @@ describe('BeeperMcpAdapter', () => {
           ],
         },
       ]);
+    });
+
+    it('maps senderID and isSender when present', async () => {
+      stubMcpServer([
+        { id: 'm1', text: 'hi', senderID: '@me:beeper.com', isSender: true },
+      ]);
+
+      const messages = await adapter().listMessages('9130', 20);
+
+      expect(messages).toEqual([
+        { id: 'm1', text: 'hi', senderID: '@me:beeper.com', isSender: true },
+      ]);
+    });
+
+    it('omits senderID and isSender when absent', async () => {
+      stubMcpServer([{ id: 'm1', text: 'hi' }]);
+
+      const messages = await adapter().listMessages('9130', 20);
+
+      expect(messages).toEqual([{ id: 'm1', text: 'hi' }]);
+    });
+  });
+
+  describe('call timeout', () => {
+    it('passes an AbortSignal timeout to the MCP fetch', async () => {
+      let captured: AbortSignal | undefined;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url, init) => {
+          captured = init?.signal as AbortSignal;
+          return new Response(
+            `data: ${JSON.stringify({
+              result: {
+                content: [{ type: 'text', text: JSON.stringify({ items: [] }) }],
+              },
+            })}\n\n`,
+            { status: 200 },
+          );
+        }),
+      );
+
+      const messages = await adapter().listMessages('9130', 20);
+
+      expect(messages).toEqual([]);
+      expect(captured).toBeInstanceOf(AbortSignal);
+      expect(captured?.aborted).toBe(false);
+      expect(MCP_TIMEOUT_MS).toBeGreaterThan(0);
     });
   });
 });

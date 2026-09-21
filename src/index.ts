@@ -7,7 +7,7 @@ import { Mutex } from './Domain/Mutex.js';
 import { OwnMessageRegistry } from './Domain/OwnMessageRegistry.js';
 import { InjectMessageAction } from './Domain/Actions/InjectMessageAction.js';
 import { PostToChatAction } from './Domain/Actions/PostToChatAction.js';
-import { PublishTurnAction } from './Domain/Actions/PublishTurnAction.js';
+
 import { RelayVoiceNoteAction } from './Domain/Actions/RelayVoiceNoteAction.js';
 import { BeeperMcpAdapter } from './Infrastructure/Beeper/BeeperMcpAdapter.js';
 import { OpencodeSocketAdapter } from './Infrastructure/Opencode/OpencodeSocketAdapter.js';
@@ -42,7 +42,7 @@ const postToChat = new PostToChatAction(
   config.beeperChatId,
   config.messageLimit,
 );
-const publishTurn = new PublishTurnAction(session, postToChat, logger);
+
 const relayVoiceNote = new RelayVoiceNoteAction(
   transcription,
   postToChat,
@@ -72,7 +72,7 @@ const inbound = new InboundPoller(
     fallbackSessionID: config.opencodeSessionId,
   },
 );
-const turnWatcher = new TurnWatcher(publishTurn, logger, sessionRef);
+const turnWatcher = new TurnWatcher(postToChat, logger, sessionRef);
 
 logger.info(
   `starting: chat=${config.beeperChatId} socket=${config.opencodeSocketPath}`,

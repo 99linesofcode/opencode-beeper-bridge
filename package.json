@@ -1,7 +1,7 @@
 {
   "name": "@99linesofcode/opencode-beeper-bridge",
   "version": "0.1.0",
-  "description": "Bridge Beeper messages to the active opencode session over the socket plugin's Unix socket. Inbound: chat messages become prompts. Outbound: assistant output streams back as condensed markdown.",
+  "description": "Bridge Beeper messages to the active opencode session over the socket plugin's Unix socket. Inbound: chat messages become prompts. Outbound: each assistant text part streams back to the chat as it is produced.",
   "type": "module",
   "license": "MIT",
   "author": "Jordy Schreuders <99linesofcode@gmail.com>",

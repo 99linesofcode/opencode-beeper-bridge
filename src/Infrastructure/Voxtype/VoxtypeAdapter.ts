@@ -27,7 +27,7 @@ export class VoxtypeAdapter implements TranscriptionPort {
   async transcribe(
     attachment: AudioAttachmentData,
   ): Promise<TranscriptionData | null> {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beeper-bridge-'));
+    const tmpDir = fs.mkdtempSync(path.join(tmpBaseDir(), 'beeper-bridge-'));
     try {
       const audio = await this.resolveAudio(attachment, tmpDir);
       if (!audio) return null;
@@ -42,13 +42,7 @@ export class VoxtypeAdapter implements TranscriptionPort {
 
       const text = await run('voxtype', ['transcribe', wav], this.logger);
       if (!text.ok) return null;
-      // Voxtype logs to stdout before the transcript; the transcript is the
-      // last non-empty line.
-      const lines = text.stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
-      const transcript = lines[lines.length - 1];
+      const transcript = extractTranscript(text.stdout);
       if (!transcript) return null;
 
       return {
@@ -127,6 +121,12 @@ type EncryptedInfo = {
   url?: string;
 };
 
+// mkdtemp base: prefer XDG_RUNTIME_DIR (tmpfs, cleared on reboot — leaked
+// dirs from a SIGKILL vanish) with a fallback to the system temp dir.
+function tmpBaseDir(): string {
+  return process.env.XDG_RUNTIME_DIR || os.tmpdir();
+}
+
 // Parse the encryptedFileInfoJSON query parameter from an mxc:// URL.
 function parseEncryptedInfo(url: string): EncryptedInfo | null {
   const match = url.match(/[?&]encryptedFileInfoJSON=([^&]+)/);
@@ -143,32 +143,78 @@ function parseEncryptedInfo(url: string): EncryptedInfo | null {
 }
 
 // mxc://server/mediaId → https://<homeserver>/_matrix/client/v1/media/download/<server>/<mediaId>
-function mxcToHttp(mxc: string): string | null {
+export function mxcToHttp(mxc: string): string | null {
   const m = mxc.match(/^mxc:\/\/([^/]+)\/(.+)$/);
   if (!m) return null;
-  return `https://matrix.beeper.com/_matrix/client/v1/media/download/${m[1]}/${m[2]}`;
+  const server = encodeURIComponent(m[1]!);
+  const mediaId = encodeURIComponent(m[2]!);
+  return `https://matrix.beeper.com/_matrix/client/v1/media/download/${server}/${mediaId}`;
 }
 
 // Download a URL to a file, following redirects. Returns true on success.
-async function download(
+// Hard timeout: a media server that accepts the connection but never
+// responds would otherwise hang the fetch forever — and with it the whole
+// inbound poller (the poll's re-entrancy guard never clears). Hard byte cap:
+// the attachment source is chat-controlled, so bound memory/disk use too.
+export const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
+export async function download(
   url: string,
   out: string,
   logger: LoggerPort,
+  maxBytes: number = MAX_DOWNLOAD_BYTES,
 ): Promise<boolean> {
   try {
-    const res = await fetch(url, { redirect: 'follow' });
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+    });
     if (!res.ok) {
       logger.error(`download ${url}: HTTP ${res.status}`);
       return false;
     }
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    fs.writeFileSync(out, bytes);
+    // Reject by declared size before reading a single byte.
+    const contentLength = Number(res.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      logger.error(
+        `download ${url}: content-length ${contentLength} exceeds cap ${maxBytes}`,
+      );
+      return false;
+    }
+    if (!res.body) {
+      logger.error(`download ${url}: no response body`);
+      return false;
+    }
+    // Stream to disk with a running byte count — a lying or absent
+    // Content-Length can't bypass the cap.
+    const file = fs.createWriteStream(out);
+    let written = 0;
+    for await (const chunk of res.body) {
+      written += chunk.length;
+      if (written > maxBytes) {
+        file.destroy();
+        fs.rmSync(out, { force: true });
+        logger.error(`download ${url}: exceeded ${maxBytes} byte cap`);
+        return false;
+      }
+      if (!file.write(chunk)) {
+        await new Promise<void>((resolve) =>
+          file.once('drain', () => resolve()),
+        );
+      }
+    }
+    await new Promise<void>((resolve, reject) => {
+      file.end((err?: Error | null) => (err ? reject(err) : resolve()));
+    });
     return true;
   } catch (err) {
     logger.error(`download ${url}: ${err}`);
     return false;
   }
 }
+
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+const CHILD_TIMEOUT_MS = 120_000;
 
 // Decrypt an AES-256-CTR encrypted media blob. The key is url-safe base64;
 // the IV is the 128-bit initial counter block.
@@ -194,7 +240,8 @@ function decrypt(
       decipher.update(ciphertext),
       decipher.final(),
     ]);
-    fs.writeFileSync(out, plaintext);
+    // Owner-only: the decrypted audio is sensitive chat content.
+    fs.writeFileSync(out, plaintext, { mode: 0o600 });
     return true;
   } catch (err) {
     logger.error(`decrypt: ${err}`);
@@ -202,9 +249,20 @@ function decrypt(
   }
 }
 
+// Extract the transcript from voxtype's stdout. Voxtype logs around the
+// transcript; the transcript itself is the quoted value of the
+// "transcription completed" line:
+//   INFO Parakeet Tdt transcription completed in 1.32s: "hello world"
+// Returns null when the line is absent or the quoted transcript is empty.
+export function extractTranscript(stdout: string): string | null {
+  const match = stdout.match(/transcription completed[^\n"]*"([^"]*)"/);
+  const transcript = match?.[1]?.trim();
+  return transcript ? transcript : null;
+}
+
 // Run a command, capture stdout, return the exit code and output. Success is
 // the exit code — ffmpeg writes progress to stderr, so stdout may be empty
-// even on success.
+// even on success. Hard timeout: a hung child must not block the poller.
 async function run(
   command: string,
   args: string[],
@@ -215,9 +273,14 @@ async function run(
   let stderr = '';
   child.stdout?.on('data', (chunk) => (stdout += chunk));
   child.stderr?.on('data', (chunk) => (stderr += chunk));
-  const code = await new Promise<number>((resolve) =>
-    child.on('exit', resolve),
-  );
+  const code = await new Promise<number>((resolve) => {
+    child.on('exit', resolve);
+    setTimeout(() => {
+      logger.error(`${command} timed out after ${CHILD_TIMEOUT_MS}ms; killing`);
+      child.kill('SIGKILL');
+      resolve(-1);
+    }, CHILD_TIMEOUT_MS).unref();
+  });
   if (code !== 0) {
     logger.error(`${command} failed (${code}): ${stderr.trim().slice(0, 300)}`);
     return { ok: false, stdout: '' };
