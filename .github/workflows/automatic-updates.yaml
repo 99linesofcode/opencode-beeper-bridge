@@ -3,8 +3,6 @@ name: Automatic updates
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
 
 permissions:
   pull-requests: write
@@ -13,13 +11,7 @@ permissions:
 
 jobs:
   update:
-    if: github.event_name == 'pull_request_target'
     uses: 99linesofcode/.github/.github/workflows/automatic-updates.yaml@main
-  agent-kickoff:
-    if: github.event_name == 'pull_request_target'
-    uses: 99linesofcode/.github/.github/workflows/update-agent.yaml@main
-    secrets: inherit
   agent:
-    if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '/opencode')
-    uses: 99linesofcode/.github/.github/workflows/opencode.yaml@main
+    uses: 99linesofcode/.github/.github/workflows/update-agent.yaml@main
     secrets: inherit
