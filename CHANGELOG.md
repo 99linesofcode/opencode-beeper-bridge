@@ -1,4 +1,13 @@
-# 0.1.0 (2026-09-21)
+# [0.2.0](https://github.com/99linesofcode/opencode-beeper-bridge/compare/v0.1.0...v0.2.0) (2026-09-23)
+
+
+### Features
+
+* detach the bridge itself when its session is no longer active ([#3](https://github.com/99linesofcode/opencode-beeper-bridge/issues/3)) ([667338f](https://github.com/99linesofcode/opencode-beeper-bridge/commit/667338f5a9728b1ffd8c00cd6ca91f616973da9e))
+
+
+
+# [0.1.0](https://github.com/99linesofcode/opencode-beeper-bridge/compare/6eed1fe2dc2ec35e50a0aca1e130381c23ac2a9e...v0.1.0) (2026-09-21)
 
 
 ### Bug Fixes
