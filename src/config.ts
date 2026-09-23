@@ -13,6 +13,8 @@ export type Config = {
   opencodeSocketPath: string;
   pollIntervalMs: number;
   messageLimit: number;
+  livenessIntervalMs: number;
+  livenessStalePolls: number;
   debug: boolean;
 };
 
@@ -52,6 +54,12 @@ export function loadConfig(
     // 20 covers any realistic burst between polls; the walk-back breaks at
     // the last-seen cursor, so older messages are never re-read anyway.
     messageLimit: Number(env.MESSAGE_LIMIT ?? 20),
+    // Self-detach: poll which session the TUI is working in; after this many
+    // consecutive polls naming a different session, the bridge exits. At the
+    // defaults a stale bridge takes itself down ~3 minutes after the user
+    // moves to another session.
+    livenessIntervalMs: Number(env.LIVENESS_INTERVAL_MS ?? 60_000),
+    livenessStalePolls: Number(env.LIVENESS_STALE_POLLS ?? 3),
     debug: env.DEBUG === 'true' || env.DEBUG === '1',
   };
 }

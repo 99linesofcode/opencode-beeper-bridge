@@ -40,6 +40,20 @@ export class OpencodeSocketAdapter implements SessionPort {
     return text ? JSON.parse(text) : null;
   }
 
+  async getActiveSession(): Promise<{ id: string } | null> {
+    const { status, text } = await request(
+      this.socketPath,
+      'GET',
+      '/session/active',
+    );
+    if (status !== 200) {
+      throw new Error(`GET /session/active: HTTP ${status}: ${text}`);
+    }
+    if (!text || text === 'null') return null;
+    const parsed = JSON.parse(text) as { id?: string };
+    return parsed.id ? { id: parsed.id } : null;
+  }
+
   async promptAsync(sessionID: string, text: string): Promise<void> {
     const body = JSON.stringify({ parts: [{ type: 'text', text }] });
     const { status, text: resText } = await request(

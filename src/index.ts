@@ -14,6 +14,7 @@ import { OpencodeSocketAdapter } from './Infrastructure/Opencode/OpencodeSocketA
 import { VoxtypeAdapter } from './Infrastructure/Voxtype/VoxtypeAdapter.js';
 import { InboundPoller } from './App/InboundPoller.js';
 import { TurnWatcher } from './App/TurnWatcher.js';
+import { SessionLivenessWatcher } from './App/SessionLivenessWatcher.js';
 
 const config = loadConfig();
 
@@ -134,12 +135,23 @@ async function subscribeWithRetry(): Promise<void> {
 void subscribeWithRetry();
 inbound.start();
 
-function shutdown(signal: string): void {
+// Self-detach: when the user moves to another session, this bridge's pinned
+// conversation is over — exit instead of injecting into a dead session.
+const liveness = new SessionLivenessWatcher(session, logger, {
+  sessionRef,
+  onStale: () => shutdown('pinned session no longer active'),
+  intervalMs: config.livenessIntervalMs,
+  stalePolls: config.livenessStalePolls,
+});
+liveness.start();
+
+function shutdown(reason: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  logger.info(`received ${signal}; shutting down`);
+  logger.info(`shutting down: ${reason}`);
   inbound.stop();
   turnWatcher.stop();
+  liveness.stop();
   if (subscription) subscription.close();
   process.exit(0);
 }
