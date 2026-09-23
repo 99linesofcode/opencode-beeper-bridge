@@ -44,6 +44,8 @@ Configuration via environment variables:
 | `OPENCODE_SESSION_ID` | — (required) | Session to attach to; wins over the `BEEPER_CHAT_ID` suffix |
 | `OPENCODE_SOCKET_PATH` | `$XDG_RUNTIME_DIR/opencode.sock` | Socket plugin's Unix socket |
 | `POLL_INTERVAL_MS` | `5000` | Inbound poll interval |
+| `LIVENESS_INTERVAL_MS` | `60000` | How often to check which session the TUI is working in |
+| `LIVENESS_STALE_POLLS` | `3` | Consecutive checks naming another session before self-detaching |
 | `DEBUG` | `false` | Log every SSE event (debugging aid) |
 
 ## How it works
@@ -78,7 +80,10 @@ bridge fails fast at startup if neither is present.
 
 - **Attach / detach lifecycle:** starting the bridge attaches the chat to the
   session named in the instance. Stopping the bridge detaches it. Switching
-  sessions in the TUI while attached does not re-target the bridge.
+  sessions in the TUI while attached does not re-target the bridge — and once
+  another session stays the active one, the bridge detaches itself (a stale
+  bridge must not keep injecting into a dead conversation). Checks pause while
+  the socket is unreachable, so a TUI restart is never misread as abandonment.
 - The bridge skips messages it sent itself (tracked by message ID) so the
   assistant's replies are never re-injected as prompts.
 - The inbound cursor is seeded at startup from the newest message — history is

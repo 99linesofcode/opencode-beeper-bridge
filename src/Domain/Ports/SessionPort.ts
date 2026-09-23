@@ -14,6 +14,7 @@ export type SessionSubscription = {
 
 export interface SessionPort {
   getSession(sessionID: string): Promise<unknown>;
+  getActiveSession(): Promise<{ id: string } | null>;
   promptAsync(sessionID: string, text: string): Promise<void>;
   getMessage(sessionID: string, messageID: string): Promise<unknown>;
   subscribeEvents(
